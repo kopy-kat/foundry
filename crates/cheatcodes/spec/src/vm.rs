@@ -262,6 +262,10 @@ interface Vm {
     #[cheatcode(group = Evm, safety = Safe)]
     function stopAndReturnStateDiff() external returns (AccountAccess[] memory accountAccesses);
 
+    /// Enforce 4337 specs
+    #[cheatcode(group = Evm, status = Experimental, safety = Unsafe)]
+    function enforce4337() external;
+
     // -------- Recording Map Writes --------
 
     /// Starts recording all map SSTOREs for later retrieval.

@@ -30,7 +30,7 @@ use revm::{
     interpreter::{
         opcode, CallInputs, CallScheme, CreateInputs, Gas, InstructionResult, Interpreter,
     },
-    primitives::{BlockEnv, CreateScheme, TransactTo},
+    primitives::{BlockEnv, CreateScheme, TransactTo, KECCAK_EMPTY},
     EVMData, Inspector,
 };
 use serde_json::Value;
@@ -153,6 +153,7 @@ pub struct Cheatcodes {
     /// merged into the previous vector.
     pub recorded_account_diffs_stack: Option<Vec<Vec<AccountAccess>>>,
 
+    pub enforce_4337: Option<Vec<Vec<AccountAccess>>>,
     /// Recorded logs
     pub recorded_logs: Option<Vec<crate::Vm::Log>>,
 
@@ -442,6 +443,58 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 // Ensure that we're not selfdestructing a context recording was initiated on
                 if let Some(last) = account_accesses.last_mut() {
                     last.push(AccountAccess { access, depth: data.journaled_state.depth() });
+                }
+            }
+        }
+
+        if let Some(enforce_4337) = &mut self.enforce_4337 {
+            if data.journaled_state.depth() > 2 {
+                match interpreter.current_opcode() {
+                    opcode::SLOAD | opcode::SSTORE => {
+                        // allowed storage read/writes:
+                        // self storage (of factory/paymaster, respectively) is allowed, but only if self entity is staked
+                        // account storage access is allowed (see Storage access by Slots, below),
+                        // in any case, may not use storage used by another UserOp sender in the same bundle (that is, paymaster and factory are not allowed as senders)
+                    }
+                    opcode::GAS => {
+                        // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }.
+                    }
+                    opcode::CREATE2 => {
+                        // A single CREATE2 is allowed if op.initcode.length != 0 and must result in the deployment of a previously-undeployed UserOperation.sender.
+                    }
+                    opcode::CALL | opcode::DELEGATECALL | opcode::CALLCODE | opcode::STATICCALL => {
+                        // Limitations:
+                        // must not use value (except from account to the entrypoint)
+                        // must not revert with out-of-gas
+                        // destination address must have code (EXTCODESIZE>0) or be a standard Ethereum precompile defined at addresses from 0x01 to 0x09
+                        // cannot call EntryPoint’s methods, except depositFor (to avoid recursion)
+                    }
+                    opcode::EXTCODEHASH | opcode::EXTCODESIZE | opcode::EXTCODECOPY => {
+                        // may not access address with no code
+                        let addr_u256 = try_or_continue!(interpreter.stack().peek(0));
+                        let addr = Address::from_word(B256::from(addr_u256));
+                        if let Ok((acc, _)) = data.journaled_state.load_account(addr, data.db) {
+                            if acc.info.code_hash == KECCAK_EMPTY {
+                                interpreter.instruction_result = InstructionResult::Revert;
+                            }
+                        }
+                    }
+                    opcode::GASPRICE
+                    | opcode::GASLIMIT
+                    | opcode::DIFFICULTY
+                    | opcode::TIMESTAMP
+                    | opcode::BASEFEE
+                    | opcode::BLOCKHASH
+                    | opcode::NUMBER
+                    | opcode::SELFBALANCE
+                    | opcode::BALANCE
+                    | opcode::ORIGIN
+                    | opcode::CREATE
+                    | opcode::COINBASE
+                    | opcode::SELFDESTRUCT => {
+                        interpreter.instruction_result = InstructionResult::Revert;
+                    }
+                    _ => (),
                 }
             }
         }

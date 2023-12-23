@@ -101,6 +101,14 @@ impl Cheatcode for recordCall {
     }
 }
 
+impl Cheatcode for enforce4337Call {
+    fn apply(&self, state: &mut Cheatcodes) -> Result {
+        let Self {} = self;
+        state.enforce_4337 = Some(Default::default());
+        Ok(Default::default())
+    }
+}
+
 impl Cheatcode for accessesCall {
     fn apply(&self, state: &mut Cheatcodes) -> Result {
         let Self { target } = *self;

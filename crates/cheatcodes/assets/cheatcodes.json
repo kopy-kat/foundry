@@ -1155,6 +1155,26 @@
     },
     {
       "func": {
+        "id": "enforce4337",
+        "description": "Enforce 4337 specs",
+        "declaration": "function enforce4337() external;",
+        "visibility": "external",
+        "mutability": "",
+        "signature": "enforce4337()",
+        "selector": "0xdd91b3a9",
+        "selectorBytes": [
+          221,
+          145,
+          179,
+          169
+        ]
+      },
+      "group": "evm",
+      "status": "experimental",
+      "safety": "unsafe"
+    },
+    {
+      "func": {
         "id": "envAddress_0",
         "description": "Gets the environment variable `name` and parses it as `address`.\nReverts if the variable was not found or could not be parsed.",
         "declaration": "function envAddress(string calldata name) external view returns (address value);",
