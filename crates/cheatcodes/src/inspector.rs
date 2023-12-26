@@ -456,7 +456,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 erc4337Details.entrypoint = interpreter.contract().address;
 
                 let input_data = interpreter.contract().input.clone();
-                let decoded_input_data = foundry_common::abi::abi_decode_calldata("simulateValidation((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes))", &input_data.to_string(), true, true).unwrap()[0];
+                let decoded_input_data = &foundry_common::abi::abi_decode_calldata("simulateValidation((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes))", &input_data.to_string(), true, true).unwrap()[0];
                 // TODO: decode userOp into ERC4337Details struct
             }
             if data.journaled_state.depth() > 2 {
