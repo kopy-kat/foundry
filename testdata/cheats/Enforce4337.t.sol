@@ -24,7 +24,20 @@ interface IAccount {
 
 contract Account {
     function validateUserOp(UserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds) public {
-        bytes memory code = address(this).code;
+        address(this).call(hex"");
+    }
+}
+
+contract AccountFactory {
+    function createAccount(bytes32 salt) public returns (address) {
+        return address(new Account{salt: salt}());
+    }
+
+    function getAccountAddress(bytes32 salt) public view returns (address) {
+        bytes32 hash =
+            keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, keccak256(type(Account).creationCode)));
+
+        return address(uint160(uint256(hash)));
     }
 }
 
@@ -47,6 +60,10 @@ contract EntryPoint {
 
     function simulateValidation(UserOperation calldata userOp) external {
         // If initCode is present, create the account.
+        if (userOp.initCode.length > 0) {
+            address factory = address(bytes20(userOp.initCode[:20]));
+            factory.call(userOp.initCode[20:]);
+        }
 
         // Call account.validateUserOp.
         bytes32 userOpHash = keccak256(abi.encode(userOp));
@@ -81,10 +98,17 @@ contract Enforce4337Test is DSTest {
 
     function testEnforce4337() public {
         EntryPoint entryPoint = new EntryPoint();
-        Account account = new Account();
+        AccountFactory accountFactory = new AccountFactory();
+
+        bytes32 salt = bytes32(0);
+        address account = accountFactory.getAccountAddress(salt);
+        bytes memory initCode = abi.encodePacked(
+            address(accountFactory), abi.encodeWithSelector(accountFactory.createAccount.selector, salt)
+        );
 
         UserOperation memory userOp = fillUserOp();
         userOp.sender = address(account);
+        userOp.initCode = initCode;
 
         // vm.expectRevert(EntryPoint.ValidationResult.selector);
         vm.enforce4337();

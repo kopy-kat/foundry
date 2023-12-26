@@ -38,6 +38,16 @@ pub struct DealRecord {
     pub new_balance: U256,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ERC4337Details {
+    pub entrypoint: Address,
+    pub sender: Address,
+    pub initCode: Option<Bytes>,
+    pub factory: Option<Address>,
+    pub paymaster: Option<Address>,
+    pub gas: Option<bool>,
+}
+
 impl Cheatcode for addrCall {
     fn apply(&self, _state: &mut Cheatcodes) -> Result {
         let Self { privateKey } = self;
@@ -104,7 +114,8 @@ impl Cheatcode for recordCall {
 impl Cheatcode for enforce4337Call {
     fn apply(&self, state: &mut Cheatcodes) -> Result {
         let Self {} = self;
-        state.enforce_4337 = Some(Default::default());
+        let details = ERC4337Details { ..Default::default() };
+        state.enforce_4337 = Some(details);
         Ok(Default::default())
     }
 }

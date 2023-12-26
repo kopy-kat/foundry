@@ -5,7 +5,7 @@ use crate::{
         mapping::{self, MappingSlots},
         mock::{MockCallDataContext, MockCallReturnData},
         prank::Prank,
-        DealRecord, RecordAccess,
+        DealRecord, ERC4337Details, RecordAccess,
     },
     script::Broadcast,
     test::expect::{
@@ -153,7 +153,7 @@ pub struct Cheatcodes {
     /// merged into the previous vector.
     pub recorded_account_diffs_stack: Option<Vec<Vec<AccountAccess>>>,
 
-    pub enforce_4337: Option<Vec<Vec<AccountAccess>>>,
+    pub enforce_4337: Option<ERC4337Details>,
     /// Recorded logs
     pub recorded_logs: Option<Vec<crate::Vm::Log>>,
 
@@ -447,27 +447,115 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             }
         }
 
-        if let Some(enforce_4337) = &mut self.enforce_4337 {
+        if !self.enforce_4337.is_none() {
+            // Todo: revert with error messages
+            if interpreter.program_counter() == 0
+                && self.enforce_4337.clone().unwrap().entrypoint == Address::ZERO
+            {
+                let erc4337Details = self.enforce_4337.as_mut().unwrap();
+                erc4337Details.entrypoint = interpreter.contract().address;
+
+                let input_data = interpreter.contract().input.clone();
+                let decoded_input_data = foundry_common::abi::abi_decode_calldata("simulateValidation((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes))", &input_data.to_string(), true, true).unwrap()[0];
+                // TODO: decode userOp into ERC4337Details struct
+            }
             if data.journaled_state.depth() > 2 {
+                if self.enforce_4337.clone().unwrap().gas == Some(true) {
+                    match interpreter.current_opcode() {
+                        opcode::CALL
+                        | opcode::CALLCODE
+                        | opcode::DELEGATECALL
+                        | opcode::STATICCALL => {
+                            // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }
+                            self.enforce_4337.as_mut().unwrap().gas = Some(false);
+                        }
+                        _ => interpreter.instruction_result = InstructionResult::Revert,
+                    }
+                }
                 match interpreter.current_opcode() {
                     opcode::SLOAD | opcode::SSTORE => {
-                        // allowed storage read/writes:
-                        // self storage (of factory/paymaster, respectively) is allowed, but only if self entity is staked
-                        // account storage access is allowed (see Storage access by Slots, below),
-                        // in any case, may not use storage used by another UserOp sender in the same bundle (that is, paymaster and factory are not allowed as senders)
+                        let sender = self.enforce_4337.clone().unwrap().sender;
+                        let factory = self.enforce_4337.clone().unwrap().factory.unwrap();
+                        let paymaster = self.enforce_4337.clone().unwrap().paymaster.unwrap();
+                        let contract_address = interpreter.contract().address;
+
+                        if contract_address == sender {
+                            // allowed
+                        } else if contract_address == factory || contract_address == paymaster {
+                            // self storage (of factory/paymaster, respectively) is allowed, but only if self entity is staked
+                            if let Ok((acc, _)) = data.journaled_state.load_account(
+                                self.enforce_4337.clone().unwrap().entrypoint,
+                                data.db,
+                            ) {
+                                // TODO
+                            }
+                        } else {
+                            let slot = try_or_continue!(interpreter.stack().peek(0));
+                            let addr = Address::from_word(B256::from(slot));
+
+                            // Slot A on any other address is allowed
+                            if addr != sender {
+                                // Slots of type keccak256(A || X) + n on any other address. (to cover mapping(address => value), which is usually used for balance in ERC-20 tokens). n is an offset value up to 128, to allow accessing fields in the format mapping(address => struct)
+                                // TODO
+                            }
+                        }
                     }
                     opcode::GAS => {
-                        // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }.
+                        self.enforce_4337.as_mut().unwrap().gas = Some(true);
                     }
                     opcode::CREATE2 => {
                         // A single CREATE2 is allowed if op.initcode.length != 0 and must result in the deployment of a previously-undeployed UserOperation.sender.
+                        // println!("self: {:?}", self);
+                        // println!("interpreter: {:?}", interpreter);
                     }
-                    opcode::CALL | opcode::DELEGATECALL | opcode::CALLCODE | opcode::STATICCALL => {
-                        // Limitations:
-                        // must not use value (except from account to the entrypoint)
-                        // must not revert with out-of-gas
-                        // destination address must have code (EXTCODESIZE>0) or be a standard Ethereum precompile defined at addresses from 0x01 to 0x09
+                    opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
+                        let target = try_or_continue!(interpreter.stack().peek(1));
+                        let addr = Address::from_word(B256::from(target));
+
                         // cannot call EntryPoint’s methods, except depositFor (to avoid recursion)
+                        if addr == self.enforce_4337.clone().unwrap().entrypoint {
+                            let mem_pointer;
+                            if interpreter.current_opcode() == opcode::CALL
+                                || interpreter.current_opcode() == opcode::CALLCODE
+                            {
+                                mem_pointer = 3;
+                            } else {
+                                mem_pointer = 2;
+                            }
+                            let offset: usize = interpreter
+                                .stack
+                                .peek(mem_pointer)
+                                .expect("stack size > 3")
+                                .saturating_to();
+                            let selector = interpreter.shared_memory.slice(offset, 0x04);
+                            if selector != [0xb7, 0x60, 0xfa, 0xf9] {
+                                interpreter.instruction_result = InstructionResult::Revert;
+                            }
+                        } else {
+                            // must not use value (except from account to the entrypoint)
+                            if interpreter.current_opcode() == opcode::CALL
+                                || interpreter.current_opcode() == opcode::CALLCODE
+                            {
+                                let value = try_or_continue!(interpreter.stack().peek(2));
+                                if value != U256::ZERO {
+                                    interpreter.instruction_result = InstructionResult::Revert;
+                                }
+                            }
+
+                            // destination address must have code (EXTCODESIZE>0) or be a standard Ethereum precompile defined at addresses from 0x01 to 0x09
+                            if !data.precompiles.contains(&addr) {
+                                if let Ok((acc, _)) =
+                                    data.journaled_state.load_account(addr, data.db)
+                                {
+                                    if acc.info.code_hash == KECCAK_EMPTY {
+                                        interpreter.instruction_result = InstructionResult::Revert;
+                                    }
+                                }
+                            }
+                        }
+
+                        // must not revert with out-of-gas
+                        // TODO
                     }
                     opcode::EXTCODEHASH | opcode::EXTCODESIZE | opcode::EXTCODECOPY => {
                         // may not access address with no code
