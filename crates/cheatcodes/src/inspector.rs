@@ -153,6 +153,7 @@ pub struct Cheatcodes {
     /// merged into the previous vector.
     pub recorded_account_diffs_stack: Option<Vec<Vec<AccountAccess>>>,
 
+    /// ERC4337Details
     pub enforce_4337: Option<ERC4337Details>,
     /// Recorded logs
     pub recorded_logs: Option<Vec<crate::Vm::Log>>,
@@ -447,36 +448,37 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             }
         }
 
-        if !self.enforce_4337.is_none() {
+        if let Some(erc4337_details) = &mut self.enforce_4337 {
             // Todo: revert with error messages
             if interpreter.program_counter() == 0
-                && self.enforce_4337.clone().unwrap().entrypoint == Address::ZERO
+                && erc4337_details.entrypoint == Address::ZERO
             {
-                let erc4337Details = self.enforce_4337.as_mut().unwrap();
-                erc4337Details.entrypoint = interpreter.contract().address;
+                erc4337_details.entrypoint = interpreter.contract().address;
+
 
                 let input_data = interpreter.contract().input.clone();
                 let decoded_input_data = &foundry_common::abi::abi_decode_calldata("simulateValidation((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes))", &input_data.to_string(), true, true).unwrap()[0];
                 // TODO: decode userOp into ERC4337Details struct
+                
             }
             if data.journaled_state.depth() > 2 {
-                if self.enforce_4337.clone().unwrap().gas == Some(true) {
+                if erc4337_details.gas == Some(true) {
                     match interpreter.current_opcode() {
                         opcode::CALL
                         | opcode::CALLCODE
                         | opcode::DELEGATECALL
                         | opcode::STATICCALL => {
                             // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }
-                            self.enforce_4337.as_mut().unwrap().gas = Some(false);
+                            erc4337_details.gas = Some(false);
                         }
                         _ => interpreter.instruction_result = InstructionResult::Revert,
                     }
                 }
                 match interpreter.current_opcode() {
                     opcode::SLOAD | opcode::SSTORE => {
-                        let sender = self.enforce_4337.clone().unwrap().sender;
-                        let factory = self.enforce_4337.clone().unwrap().factory.unwrap();
-                        let paymaster = self.enforce_4337.clone().unwrap().paymaster.unwrap();
+                        let sender = erc4337_details.sender;
+                        let factory = erc4337_details.factory.unwrap();
+                        let paymaster = erc4337_details.paymaster.unwrap();
                         let contract_address = interpreter.contract().address;
 
                         if contract_address == sender {
