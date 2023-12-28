@@ -42,10 +42,10 @@ pub struct DealRecord {
 pub struct ERC4337Details {
     pub entrypoint: Address,
     pub sender: Address,
-    pub init_code: Option<Bytes>,
     pub factory: Option<Address>,
+    pub factory_created: bool,
     pub paymaster: Option<Address>,
-    pub gas: Option<bool>,
+    pub gas: bool,
 }
 
 impl Cheatcode for addrCall {

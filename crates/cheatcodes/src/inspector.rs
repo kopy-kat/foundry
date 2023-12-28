@@ -13,7 +13,7 @@ use crate::{
     },
     CheatsConfig, CheatsCtxt, Error, Result, Vm,
 };
-use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_primitives::{Address, Bytes, FixedBytes, B256, U256};
 use alloy_sol_types::{SolInterface, SolValue};
 use ethers_core::types::{
     transaction::eip2718::TypedTransaction, NameOrAddress, TransactionRequest,
@@ -38,7 +38,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fs::File,
     io::BufReader,
-    ops::Range,
+    ops::{Add, Range},
     path::PathBuf,
     sync::Arc,
 };
@@ -264,7 +264,7 @@ impl Cheatcodes {
         if data.journaled_state.depth > 1 && !data.db.has_cheatcode_access(inputs.caller) {
             // we only grant cheat code access for new contracts if the caller also has
             // cheatcode access and the new contract is created in top most call
-            return created_address
+            return created_address;
         }
 
         data.db.allow_cheatcode_access(created_address);
@@ -281,12 +281,12 @@ impl Cheatcodes {
 
         // Delay revert clean up until expected revert is handled, if set.
         if self.expected_revert.is_some() {
-            return
+            return;
         }
 
         // we only want to apply cleanup top level
         if data.journaled_state.depth() > 0 {
-            return
+            return;
         }
 
         // Roll back all previously applied deals
@@ -450,26 +450,28 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
 
         if let Some(erc4337_details) = &mut self.enforce_4337 {
             // Todo: revert with error messages
-            if interpreter.program_counter() == 0
-                && erc4337_details.entrypoint == Address::ZERO
-            {
+            if interpreter.program_counter() == 0 && erc4337_details.entrypoint == Address::ZERO {
                 erc4337_details.entrypoint = interpreter.contract().address;
 
-
                 let input_data = interpreter.contract().input.clone();
-                let decoded_input_data = &foundry_common::abi::abi_decode_calldata("simulateValidation((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes))", &input_data.to_string(), true, true).unwrap()[0];
-                // TODO: decode userOp into ERC4337Details struct
-                
+                let _sender = FixedBytes::<32>::from_slice(&input_data[0x24..0x44]);
+                erc4337_details.sender = Address::from_word(_sender);
+                let _init_code_pointer = FixedBytes::<32>::from_slice(&input_data[0x64..0x84]);
+                // let _init_code_factory = FixedBytes::<32>::from_slice(
+                //     &input_data[_init_code_pointer + 0x24.._init_code_pointer],
+                // );
+                // check if initcode empty
+                // erc4337_details.sender = Address::from_word(B256::from(_sender));
             }
             if data.journaled_state.depth() > 2 {
-                if erc4337_details.gas == Some(true) {
+                if erc4337_details.gas == true {
                     match interpreter.current_opcode() {
                         opcode::CALL
                         | opcode::CALLCODE
                         | opcode::DELEGATECALL
                         | opcode::STATICCALL => {
                             // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }
-                            erc4337_details.gas = Some(false);
+                            erc4337_details.gas = false;
                         }
                         _ => interpreter.instruction_result = InstructionResult::Revert,
                     }
@@ -503,12 +505,22 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         }
                     }
                     opcode::GAS => {
-                        self.enforce_4337.as_mut().unwrap().gas = Some(true);
+                        self.enforce_4337.as_mut().unwrap().gas = true;
                     }
                     opcode::CREATE2 => {
                         // A single CREATE2 is allowed if op.initcode.length != 0 and must result in the deployment of a previously-undeployed UserOperation.sender.
-                        // println!("self: {:?}", self);
-                        // println!("interpreter: {:?}", interpreter);
+                        if interpreter.contract().address
+                            == self.enforce_4337.clone().unwrap().factory.unwrap()
+                        {
+                            if self.enforce_4337.clone().unwrap().factory_created == true {
+                                interpreter.instruction_result = InstructionResult::Revert;
+                            } else {
+                                // TODO: ensure only sender is created
+                                self.enforce_4337.as_mut().unwrap().gas = true;
+                            }
+                        } else {
+                            interpreter.instruction_result = InstructionResult::Revert;
+                        }
                     }
                     opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
                         let target = try_or_continue!(interpreter.stack().peek(1));
@@ -649,10 +661,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     );
                 }
                 // Record account accesses via the EXT family of opcodes
-                opcode::EXTCODECOPY |
-                opcode::EXTCODESIZE |
-                opcode::EXTCODEHASH |
-                opcode::BALANCE => {
+                opcode::EXTCODECOPY
+                | opcode::EXTCODESIZE
+                | opcode::EXTCODEHASH
+                | opcode::BALANCE => {
                     let kind = match interpreter.current_opcode() {
                         opcode::EXTCODECOPY => crate::Vm::AccountAccessKind::Extcodecopy,
                         opcode::EXTCODESIZE => crate::Vm::AccountAccessKind::Extcodesize,
@@ -865,11 +877,11 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             return match self.apply_cheatcode(data, call) {
                 Ok(retdata) => (InstructionResult::Return, gas, retdata.into()),
                 Err(err) => (InstructionResult::Revert, gas, err.abi_encode().into()),
-            }
+            };
         }
 
         if call.contract == HARDHAT_CONSOLE_ADDRESS {
-            return (InstructionResult::Continue, gas, Bytes::new())
+            return (InstructionResult::Continue, gas, Bytes::new());
         }
 
         // Handle expected calls
@@ -907,19 +919,19 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 mocks
                     .iter()
                     .find(|(mock, _)| {
-                        call.input.get(..mock.calldata.len()) == Some(&mock.calldata[..]) &&
-                            mock.value.map_or(true, |value| value == call.transfer.value)
+                        call.input.get(..mock.calldata.len()) == Some(&mock.calldata[..])
+                            && mock.value.map_or(true, |value| value == call.transfer.value)
                     })
                     .map(|(_, v)| v)
             }) {
-                return (return_data.ret_type, gas, return_data.data.clone())
+                return (return_data.ret_type, gas, return_data.data.clone());
             }
         }
 
         // Apply our prank
         if let Some(prank) = &self.prank {
-            if data.journaled_state.depth() >= prank.depth &&
-                call.context.caller == prank.prank_caller
+            if data.journaled_state.depth() >= prank.depth
+                && call.context.caller == prank.prank_caller
             {
                 let mut prank_applied = false;
 
@@ -951,8 +963,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             //
             // We do this because any subsequent contract calls *must* exist on chain and
             // we only want to grab *this* call, not internal ones
-            if data.journaled_state.depth() == broadcast.depth &&
-                call.context.caller == broadcast.original_caller
+            if data.journaled_state.depth() == broadcast.depth
+                && call.context.caller == broadcast.original_caller
             {
                 // At the target depth we set `msg.sender` & tx.origin.
                 // We are simulating the caller as being an EOA, so *both* must be set to the
@@ -969,7 +981,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     if let Err(err) =
                         data.journaled_state.load_account(broadcast.new_origin, data.db)
                     {
-                        return (InstructionResult::Revert, gas, Error::encode(err))
+                        return (InstructionResult::Revert, gas, Error::encode(err));
                     }
 
                     let is_fixed_gas_limit = check_if_fixed_gas_limit(data, call.gas_limit);
@@ -1000,7 +1012,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     debug!(target: "cheatcodes", address=%broadcast.new_origin, nonce=prev+1, prev, "incremented nonce");
                 } else if broadcast.single_call {
                     let msg = "`staticcall`s are not allowed after `broadcast`; use `startBroadcast` instead";
-                    return (InstructionResult::Revert, Gas::new(0), Error::encode(msg))
+                    return (InstructionResult::Revert, Gas::new(0), Error::encode(msg));
                 }
             }
         }
@@ -1063,7 +1075,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
         retdata: Bytes,
     ) -> (InstructionResult, Gas, Bytes) {
         if call.contract == CHEATCODE_ADDRESS || call.contract == HARDHAT_CONSOLE_ADDRESS {
-            return (status, remaining_gas, retdata)
+            return (status, remaining_gas, retdata);
         }
 
         if data.journaled_state.depth() == 0 && self.skip {
@@ -1071,7 +1083,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 InstructionResult::Revert,
                 remaining_gas,
                 super::Error::from(MAGIC_SKIP).abi_encode().into(),
-            )
+            );
         }
 
         // Clean up pranks
@@ -1113,7 +1125,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         (InstructionResult::Revert, remaining_gas, error.abi_encode().into())
                     }
                     Ok((_, retdata)) => (InstructionResult::Return, remaining_gas, retdata),
-                }
+                };
             }
         }
 
@@ -1182,7 +1194,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     InstructionResult::Revert,
                     remaining_gas,
                     "log != expected log".abi_encode().into(),
-                )
+                );
             } else {
                 // All emits were found, we're good.
                 // Clear the queue, as we expect the user to declare more events for the next call
@@ -1199,7 +1211,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
         // return a better error here
         if status == InstructionResult::Revert {
             if let Some(err) = diag {
-                return (status, remaining_gas, Error::encode(err.to_error_msg(&self.labels)))
+                return (status, remaining_gas, Error::encode(err.to_error_msg(&self.labels)));
             }
         }
 
@@ -1208,9 +1220,9 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
         if let TransactTo::Call(test_contract) = data.env.tx.transact_to {
             // if a call to a different contract than the original test contract returned with
             // `Stop` we check if the contract actually exists on the active fork
-            if data.db.is_forked_mode() &&
-                status == InstructionResult::Stop &&
-                call.contract != test_contract
+            if data.db.is_forked_mode()
+                && status == InstructionResult::Stop
+                && call.contract != test_contract
             {
                 self.fork_revert_diagnostic =
                     data.db.diagnose_revert(call.contract, &data.journaled_state);
@@ -1223,7 +1235,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             // earlier error that happened first with unrelated information about
             // another error when using cheatcodes.
             if status == InstructionResult::Revert {
-                return (status, remaining_gas, retdata)
+                return (status, remaining_gas, retdata);
             }
 
             // If there's not a revert, we can continue on to run the last logic for expect*
@@ -1268,7 +1280,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             "expected call to {address} with {expected_values} \
                              to be called {count} time{s}, but {but}"
                         );
-                        return (InstructionResult::Revert, remaining_gas, Error::encode(msg))
+                        return (InstructionResult::Revert, remaining_gas, Error::encode(msg));
                     }
                 }
             }
@@ -1285,7 +1297,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     "expected an emit, but the call reverted instead. \
                      ensure you're testing the happy path when using `expectEmit`"
                 };
-                return (InstructionResult::Revert, remaining_gas, Error::encode(msg))
+                return (InstructionResult::Revert, remaining_gas, Error::encode(msg));
             }
         }
 
@@ -1316,11 +1328,11 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
 
         // Apply our broadcast
         if let Some(broadcast) = &self.broadcast {
-            if data.journaled_state.depth() >= broadcast.depth &&
-                call.caller == broadcast.original_caller
+            if data.journaled_state.depth() >= broadcast.depth
+                && call.caller == broadcast.original_caller
             {
                 if let Err(err) = data.journaled_state.load_account(broadcast.new_origin, data.db) {
-                    return (InstructionResult::Revert, None, gas, Error::encode(err))
+                    return (InstructionResult::Revert, None, gas, Error::encode(err));
                 }
 
                 data.env.tx.caller = broadcast.new_origin;
@@ -1447,7 +1459,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     Err(err) => {
                         (InstructionResult::Revert, None, remaining_gas, err.abi_encode().into())
                     }
-                }
+                };
             }
         }
 
@@ -1607,10 +1619,10 @@ fn apply_dispatch<DB: DatabaseExt>(calls: &Vm::VmCalls, ccx: &mut CheatsCtxt<DB>
 fn access_is_call(kind: crate::Vm::AccountAccessKind) -> bool {
     matches!(
         kind,
-        crate::Vm::AccountAccessKind::Call |
-            crate::Vm::AccountAccessKind::StaticCall |
-            crate::Vm::AccountAccessKind::CallCode |
-            crate::Vm::AccountAccessKind::DelegateCall
+        crate::Vm::AccountAccessKind::Call
+            | crate::Vm::AccountAccessKind::StaticCall
+            | crate::Vm::AccountAccessKind::CallCode
+            | crate::Vm::AccountAccessKind::DelegateCall
     )
 }
 
