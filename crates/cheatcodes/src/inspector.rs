@@ -448,12 +448,11 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             }
         }
 
-        if self.enforce_4337.is_some() {
+        if let Some(erc4337_details) = &mut self.enforce_4337 {
             // Todo: revert with error messages
             if interpreter.program_counter() == 0
-                && self.enforce_4337.clone().unwrap().entrypoint == Address::ZERO
+                && erc4337_details.entrypoint == Address::ZERO
             {
-                let erc4337_details = self.enforce_4337.as_mut().unwrap();
                 erc4337_details.entrypoint = interpreter.contract().address;
 
 
@@ -463,23 +462,23 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 
             }
             if data.journaled_state.depth() > 2 {
-                if self.enforce_4337.clone().unwrap().gas == Some(true) {
+                if erc4337_details.gas == Some(true) {
                     match interpreter.current_opcode() {
                         opcode::CALL
                         | opcode::CALLCODE
                         | opcode::DELEGATECALL
                         | opcode::STATICCALL => {
                             // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }
-                            self.enforce_4337.as_mut().unwrap().gas = Some(false);
+                            erc4337_details.gas = Some(false);
                         }
                         _ => interpreter.instruction_result = InstructionResult::Revert,
                     }
                 }
                 match interpreter.current_opcode() {
                     opcode::SLOAD | opcode::SSTORE => {
-                        let sender = self.enforce_4337.clone().unwrap().sender;
-                        let factory = self.enforce_4337.clone().unwrap().factory.unwrap();
-                        let paymaster = self.enforce_4337.clone().unwrap().paymaster.unwrap();
+                        let sender = erc4337_details.sender;
+                        let factory = erc4337_details.factory.unwrap();
+                        let paymaster = erc4337_details.paymaster.unwrap();
                         let contract_address = interpreter.contract().address;
 
                         if contract_address == sender {
