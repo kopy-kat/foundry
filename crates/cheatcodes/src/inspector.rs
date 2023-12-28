@@ -153,6 +153,7 @@ pub struct Cheatcodes {
     /// merged into the previous vector.
     pub recorded_account_diffs_stack: Option<Vec<Vec<AccountAccess>>>,
 
+    /// ERC4337Details
     pub enforce_4337: Option<ERC4337Details>,
     /// Recorded logs
     pub recorded_logs: Option<Vec<crate::Vm::Log>>,
@@ -447,17 +448,19 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             }
         }
 
-        if !self.enforce_4337.is_none() {
+        if self.enforce_4337.is_some() {
             // Todo: revert with error messages
             if interpreter.program_counter() == 0
                 && self.enforce_4337.clone().unwrap().entrypoint == Address::ZERO
             {
-                let erc4337Details = self.enforce_4337.as_mut().unwrap();
-                erc4337Details.entrypoint = interpreter.contract().address;
+                let erc4337_details = self.enforce_4337.as_mut().unwrap();
+                erc4337_details.entrypoint = interpreter.contract().address;
+
 
                 let input_data = interpreter.contract().input.clone();
                 let decoded_input_data = &foundry_common::abi::abi_decode_calldata("simulateValidation((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes))", &input_data.to_string(), true, true).unwrap()[0];
                 // TODO: decode userOp into ERC4337Details struct
+                
             }
             if data.journaled_state.depth() > 2 {
                 if self.enforce_4337.clone().unwrap().gas == Some(true) {

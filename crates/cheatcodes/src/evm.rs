@@ -42,7 +42,7 @@ pub struct DealRecord {
 pub struct ERC4337Details {
     pub entrypoint: Address,
     pub sender: Address,
-    pub initCode: Option<Bytes>,
+    pub init_code: Option<Bytes>,
     pub factory: Option<Address>,
     pub paymaster: Option<Address>,
     pub gas: Option<bool>,
