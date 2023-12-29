@@ -1,7 +1,7 @@
 //! Implementations of [`Evm`](crate::Group::Evm) cheatcodes.
 
 use crate::{Cheatcode, Cheatcodes, CheatsCtxt, Result, Vm::*};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes, FixedBytes, U256};
 use alloy_sol_types::SolValue;
 use ethers_core::utils::{Genesis, GenesisAccount};
 use ethers_signers::Signer;
@@ -46,6 +46,7 @@ pub struct ERC4337Details {
     pub factory_created: bool,
     pub paymaster: Option<Address>,
     pub gas: bool,
+    pub address_hashes: Vec<FixedBytes<32>>,
 }
 
 impl Cheatcode for addrCall {

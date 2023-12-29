@@ -13,7 +13,7 @@ use crate::{
     },
     CheatsConfig, CheatsCtxt, Error, Result, Vm,
 };
-use alloy_primitives::{Address, Bytes, FixedBytes, B256, I256, U256};
+use alloy_primitives::{keccak256, Address, Bytes, FixedBytes, B256, I256, U256};
 use alloy_sol_types::{SolInterface, SolValue};
 use ethers_core::types::{
     transaction::eip2718::TypedTransaction, NameOrAddress, TransactionRequest,
@@ -38,7 +38,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fs::File,
     io::BufReader,
-    ops::Range,
+    ops::{Add, Range},
     path::PathBuf,
     sync::Arc,
 };
@@ -506,7 +506,19 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     }
                 }
                 match interpreter.current_opcode() {
-                    opcode::KECCAK256 => {}
+                    opcode::KECCAK256 => {
+                        let offset: usize =
+                            interpreter.stack.peek(0).expect("stack size > 1").saturating_to();
+                        let size: usize =
+                            interpreter.stack.peek(1).expect("stack size > 2").saturating_to();
+                        let pre_image = interpreter.shared_memory.slice(offset, size);
+                        if pre_image.contains(
+                            Bytes::from(Address::into_word(&erc4337_details.sender)).as_ref(),
+                        ) {
+                            let result = keccak256(pre_image);
+                            erc4337_details.address_hashes.push(result);
+                        }
+                    }
                     opcode::SLOAD | opcode::SSTORE => {
                         let sender = erc4337_details.sender;
                         let mut factory = Address::ZERO; // this is fine if we assume that the zero address can never have code
@@ -536,7 +548,17 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             // Slot A on any other address is allowed
                             if addr != sender {
                                 // Slots of type keccak256(A || X) + n on any other address. (to cover mapping(address => value), which is usually used for balance in ERC-20 tokens). n is an offset value up to 128, to allow accessing fields in the format mapping(address => struct)
-                                // TODO
+                                erc4337_details.address_hashes.iter().for_each(|hash | {
+                                    let hash_uint = U256::from(hash);
+                                    if !(slot <  hash_uint + U256::from(128) && slot >= hash_uint) {
+                                        let revert_string = format!(
+                                            "SLOAD/SSTORE is only allowed on external contracts if the slot is of type keccak256(A || X) + n"
+                                        )
+                                        .abi_encode();
+                                        mstore_revert_string(interpreter, &revert_string);
+                                        interpreter.instruction_result = InstructionResult::Revert;
+                                    }
+                                });
                             }
                         }
                     }
