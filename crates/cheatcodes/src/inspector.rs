@@ -13,7 +13,7 @@ use crate::{
     },
     CheatsConfig, CheatsCtxt, Error, Result, Vm,
 };
-use alloy_primitives::{Address, Bytes, FixedBytes, B256, U256};
+use alloy_primitives::{Address, Bytes, FixedBytes, B256, I256, U256};
 use alloy_sol_types::{SolInterface, SolValue};
 use ethers_core::types::{
     transaction::eip2718::TypedTransaction, NameOrAddress, TransactionRequest,
@@ -38,7 +38,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fs::File,
     io::BufReader,
-    ops::{Add, Range},
+    ops::Range,
     path::PathBuf,
     sync::Arc,
 };
@@ -449,19 +449,41 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
         }
 
         if let Some(erc4337_details) = &mut self.enforce_4337 {
-            // Todo: revert with error messages
             if interpreter.program_counter() == 0 && erc4337_details.entrypoint == Address::ZERO {
                 erc4337_details.entrypoint = interpreter.contract().address;
 
                 let input_data = interpreter.contract().input.clone();
+
+                // Get sender
                 let _sender = FixedBytes::<32>::from_slice(&input_data[0x24..0x44]);
                 erc4337_details.sender = Address::from_word(_sender);
-                let _init_code_pointer = FixedBytes::<32>::from_slice(&input_data[0x64..0x84]);
-                // let _init_code_factory = FixedBytes::<32>::from_slice(
-                //     &input_data[_init_code_pointer + 0x24.._init_code_pointer],
+
+                // Get initcode factory
+                let _init_code_pointer =
+                    I256::try_from_be_slice(&input_data[0x64..0x84]).unwrap().as_usize();
+                let _init_code_size = FixedBytes::<32>::from_slice(
+                    &input_data[_init_code_pointer + 0x24.._init_code_pointer + 0x44],
+                );
+                if _init_code_size != FixedBytes::<32>::from_slice(&[0x00; 32]) {
+                    let _init_code_factory = FixedBytes::<20>::from_slice(
+                        &input_data[_init_code_pointer + 0x44.._init_code_pointer + 0x58],
+                    );
+                    erc4337_details.factory = Some(Address::from(_init_code_factory));
+                }
+
+                // Todo: Get paymaster
+                // let _paymaster_pointer =
+                //     I256::try_from_be_slice(&input_data[0x204..0x224]).unwrap().as_usize();
+                // let _paymaster_size = FixedBytes::<32>::from_slice(
+                //     &input_data[_paymaster_pointer + 0x24.._paymaster_pointer + 0x44],
                 // );
-                // check if initcode empty
-                // erc4337_details.sender = Address::from_word(B256::from(_sender));
+                // if _paymaster_size != FixedBytes::<32>::from_slice(&[0x00; 32]) {
+                //     let _paymaster_factory = FixedBytes::<20>::from_slice(
+                //         &input_data[_paymaster_pointer + 0x44.._paymaster_pointer + 0x58],
+                //     );
+                //     erc4337_details.factory = Some(Address::from(_paymaster_factory));
+                //     println!("paymaster: {:?}", erc4337_details.paymaster);
+                // }
             }
             if data.journaled_state.depth() > 2 {
                 if erc4337_details.gas == true {
@@ -473,24 +495,38 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             // GAS is allowed if followed immediately by one of { CALL, DELEGATECALL, CALLCODE, STATICCALL }
                             erc4337_details.gas = false;
                         }
-                        _ => interpreter.instruction_result = InstructionResult::Revert,
+                        _ => {
+                            let revert_string = format!(
+                                "GAS opcode is only allowed if followed immediately by a call"
+                            )
+                            .abi_encode();
+                            mstore_revert_string(interpreter, &revert_string);
+                            interpreter.instruction_result = InstructionResult::Revert;
+                        }
                     }
                 }
                 match interpreter.current_opcode() {
+                    opcode::KECCAK256 => {}
                     opcode::SLOAD | opcode::SSTORE => {
                         let sender = erc4337_details.sender;
-                        let factory = erc4337_details.factory.unwrap();
-                        let paymaster = erc4337_details.paymaster.unwrap();
+                        let mut factory = Address::ZERO; // this is fine if we assume that the zero address can never have code
+                        if erc4337_details.factory.is_some() {
+                            factory = erc4337_details.factory.unwrap();
+                        }
+                        let mut paymaster = Address::ZERO; // this is fine if we assume that the zero address can never have code
+                        if erc4337_details.paymaster.is_some() {
+                            paymaster = erc4337_details.paymaster.unwrap();
+                        }
                         let contract_address = interpreter.contract().address;
 
                         if contract_address == sender {
                             // allowed
                         } else if contract_address == factory || contract_address == paymaster {
                             // self storage (of factory/paymaster, respectively) is allowed, but only if self entity is staked
-                            if let Ok((acc, _)) = data.journaled_state.load_account(
-                                self.enforce_4337.clone().unwrap().entrypoint,
-                                data.db,
-                            ) {
+                            if let Ok((acc, _)) = data
+                                .journaled_state
+                                .load_account(erc4337_details.entrypoint, data.db)
+                            {
                                 // TODO
                             }
                         } else {
@@ -505,20 +541,26 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         }
                     }
                     opcode::GAS => {
-                        self.enforce_4337.as_mut().unwrap().gas = true;
+                        erc4337_details.gas = true;
                     }
                     opcode::CREATE2 => {
                         // A single CREATE2 is allowed if op.initcode.length != 0 and must result in the deployment of a previously-undeployed UserOperation.sender.
-                        if interpreter.contract().address
-                            == self.enforce_4337.clone().unwrap().factory.unwrap()
-                        {
-                            if self.enforce_4337.clone().unwrap().factory_created == true {
+                        if interpreter.contract().address == erc4337_details.factory.unwrap() {
+                            if erc4337_details.factory_created == true {
+                                let revert_string =
+                                    format!("CREATE2 is only allowed if initcode.length != 0")
+                                        .abi_encode();
+                                mstore_revert_string(interpreter, &revert_string);
                                 interpreter.instruction_result = InstructionResult::Revert;
                             } else {
                                 // TODO: ensure only sender is created
-                                self.enforce_4337.as_mut().unwrap().gas = true;
+                                erc4337_details.factory_created = true;
                             }
                         } else {
+                            let revert_string =
+                                format!("CREATE2 is only allowed if initcode.length != 0")
+                                    .abi_encode();
+                            mstore_revert_string(interpreter, &revert_string);
                             interpreter.instruction_result = InstructionResult::Revert;
                         }
                     }
@@ -527,7 +569,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         let addr = Address::from_word(B256::from(target));
 
                         // cannot call EntryPoint’s methods, except depositFor (to avoid recursion)
-                        if addr == self.enforce_4337.clone().unwrap().entrypoint {
+                        if addr == erc4337_details.entrypoint {
                             let mem_pointer;
                             if interpreter.current_opcode() == opcode::CALL
                                 || interpreter.current_opcode() == opcode::CALLCODE
@@ -543,6 +585,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                                 .saturating_to();
                             let selector = interpreter.shared_memory.slice(offset, 0x04);
                             if selector != [0xb7, 0x60, 0xfa, 0xf9] {
+                                let revert_string = format!("calls into the entrypoint are not allowed, except for calling depositTo").abi_encode();
+                                mstore_revert_string(interpreter, &revert_string);
                                 interpreter.instruction_result = InstructionResult::Revert;
                             }
                         } else {
@@ -552,6 +596,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             {
                                 let value = try_or_continue!(interpreter.stack().peek(2));
                                 if value != U256::ZERO {
+                                    let revert_string =
+                                        format!("calls must not use value except from the account to the entrypoint")
+                                            .abi_encode();
+                                    mstore_revert_string(interpreter, &revert_string);
                                     interpreter.instruction_result = InstructionResult::Revert;
                                 }
                             }
@@ -562,6 +610,11 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                                     data.journaled_state.load_account(addr, data.db)
                                 {
                                     if acc.info.code_hash == KECCAK_EMPTY {
+                                        let revert_string = format!(
+                                            "calls to addresses without code are not allowed"
+                                        )
+                                        .abi_encode();
+                                        mstore_revert_string(interpreter, &revert_string);
                                         interpreter.instruction_result = InstructionResult::Revert;
                                     }
                                 }
@@ -577,6 +630,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         let addr = Address::from_word(B256::from(addr_u256));
                         if let Ok((acc, _)) = data.journaled_state.load_account(addr, data.db) {
                             if acc.info.code_hash == KECCAK_EMPTY {
+                                let revert_string =
+                                    format!("EXTCODE* opcodes may not access address with no code")
+                                        .abi_encode();
+                                mstore_revert_string(interpreter, &revert_string);
                                 interpreter.instruction_result = InstructionResult::Revert;
                             }
                         }
@@ -594,6 +651,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     | opcode::CREATE
                     | opcode::COINBASE
                     | opcode::SELFDESTRUCT => {
+                        let revert_string =
+                            format!("{} is a banned opcode", interpreter.current_opcode())
+                                .abi_encode();
+                        mstore_revert_string(interpreter, &revert_string);
                         interpreter.instruction_result = InstructionResult::Revert;
                     }
                     _ => (),

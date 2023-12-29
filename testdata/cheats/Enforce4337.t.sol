@@ -18,13 +18,22 @@ struct UserOperation {
     bytes signature;
 }
 
+contract ExternalContract {
+    mapping(address => uint256) public balances;
+
+    fallback() external payable {
+        balances[msg.sender] += 1 ether;
+    }
+}
+
 interface IAccount {
     function validateUserOp(UserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds) external;
 }
 
 contract Account {
     function validateUserOp(UserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds) public {
-        address(this).call(hex"");
+        address externalContract = abi.decode(userOp.callData, (address));
+        externalContract.call(hex"");
     }
 }
 
@@ -87,11 +96,11 @@ contract Enforce4337Test is DSTest {
         userOp.nonce = 0;
         userOp.initCode = hex"";
         userOp.callData = hex"";
-        userOp.callGasLimit = 0;
-        userOp.verificationGasLimit = 0;
-        userOp.preVerificationGas = 0;
-        userOp.maxFeePerGas = 0;
-        userOp.maxPriorityFeePerGas = 0;
+        userOp.callGasLimit = 1;
+        userOp.verificationGasLimit = 1;
+        userOp.preVerificationGas = 1;
+        userOp.maxFeePerGas = 1;
+        userOp.maxPriorityFeePerGas = 1;
         userOp.paymasterAndData = hex"";
         userOp.signature = hex"";
     }
@@ -99,6 +108,7 @@ contract Enforce4337Test is DSTest {
     function testEnforce4337() public {
         EntryPoint entryPoint = new EntryPoint();
         AccountFactory accountFactory = new AccountFactory();
+        ExternalContract externalContract = new ExternalContract();
 
         bytes32 salt = bytes32(0);
         address account = accountFactory.getAccountAddress(salt);
@@ -109,6 +119,7 @@ contract Enforce4337Test is DSTest {
         UserOperation memory userOp = fillUserOp();
         userOp.sender = address(account);
         userOp.initCode = initCode;
+        userOp.callData = abi.encode(address(externalContract));
 
         // vm.expectRevert(EntryPoint.ValidationResult.selector);
         vm.enforce4337();
