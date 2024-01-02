@@ -496,12 +496,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             erc4337_details.gas = false;
                         }
                         _ => {
-                            let revert_string = format!(
-                                "GAS opcode is only allowed if followed immediately by a call"
-                            )
-                            .abi_encode();
-                            mstore_revert_string(interpreter, &revert_string);
-                            interpreter.instruction_result = InstructionResult::Revert;
+                            revert_with_string(
+                                interpreter,
+                                "GAS opcode is only allowed if followed immediately by a call",
+                            );
                         }
                     }
                 }
@@ -512,9 +510,15 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         let size: usize =
                             interpreter.stack.peek(1).expect("stack size > 2").saturating_to();
                         let pre_image = interpreter.shared_memory.slice(offset, size);
-                        if pre_image.contains(
-                            Bytes::from(Address::into_word(&erc4337_details.sender)).as_ref(),
-                        ) {
+                        let sender_bytes = Address::into_word(&erc4337_details.sender);
+                        let mut is_pre_image = true;
+                        for i in 0..sender_bytes.as_slice().len() {
+                            if !pre_image.contains(&sender_bytes[i]) {
+                                is_pre_image = false;
+                                break;
+                            }
+                        }
+                        if is_pre_image {
                             let result = keccak256(pre_image);
                             erc4337_details.address_hashes.push(result);
                         }
@@ -548,17 +552,20 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             // Slot A on any other address is allowed
                             if addr != sender {
                                 // Slots of type keccak256(A || X) + n on any other address. (to cover mapping(address => value), which is usually used for balance in ERC-20 tokens). n is an offset value up to 128, to allow accessing fields in the format mapping(address => struct)
-                                erc4337_details.address_hashes.iter().for_each(|hash | {
-                                    let hash_uint = U256::from(hash);
-                                    if !(slot <  hash_uint + U256::from(128) && slot >= hash_uint) {
-                                        let revert_string = format!(
-                                            "SLOAD/SSTORE is only allowed on external contracts if the slot is of type keccak256(A || X) + n"
-                                        )
-                                        .abi_encode();
-                                        mstore_revert_string(interpreter, &revert_string);
-                                        interpreter.instruction_result = InstructionResult::Revert;
+                                let mut is_exempt = false;
+                                erc4337_details.address_hashes.iter().for_each(|hash| {
+                                    let hash_uint =
+                                        U256::try_from_be_slice(&hash.as_slice()).unwrap();
+                                    if slot < hash_uint + U256::from(128) && slot >= hash_uint {
+                                        is_exempt = true;
                                     }
                                 });
+                                if !is_exempt {
+                                    revert_with_string(
+                                        interpreter,
+                                        "SLOAD/SSTORE is only allowed on external contracts if the slot is of type keccak256(A || X) + n",
+                                    );
+                                }
                             }
                         }
                     }
@@ -569,21 +576,19 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         // A single CREATE2 is allowed if op.initcode.length != 0 and must result in the deployment of a previously-undeployed UserOperation.sender.
                         if interpreter.contract().address == erc4337_details.factory.unwrap() {
                             if erc4337_details.factory_created == true {
-                                let revert_string =
-                                    format!("CREATE2 is only allowed if initcode.length != 0")
-                                        .abi_encode();
-                                mstore_revert_string(interpreter, &revert_string);
-                                interpreter.instruction_result = InstructionResult::Revert;
+                                revert_with_string(
+                                    interpreter,
+                                    "CREATE2 is only allowed if initcode.length != 0",
+                                );
                             } else {
                                 // TODO: ensure only sender is created
                                 erc4337_details.factory_created = true;
                             }
                         } else {
-                            let revert_string =
-                                format!("CREATE2 is only allowed if initcode.length != 0")
-                                    .abi_encode();
-                            mstore_revert_string(interpreter, &revert_string);
-                            interpreter.instruction_result = InstructionResult::Revert;
+                            revert_with_string(
+                                interpreter,
+                                "CREATE2 is only allowed if initcode.length != 0",
+                            );
                         }
                     }
                     opcode::CALL | opcode::CALLCODE | opcode::DELEGATECALL | opcode::STATICCALL => {
@@ -607,9 +612,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                                 .saturating_to();
                             let selector = interpreter.shared_memory.slice(offset, 0x04);
                             if selector != [0xb7, 0x60, 0xfa, 0xf9] {
-                                let revert_string = format!("calls into the entrypoint are not allowed, except for calling depositTo").abi_encode();
-                                mstore_revert_string(interpreter, &revert_string);
-                                interpreter.instruction_result = InstructionResult::Revert;
+                                revert_with_string(
+                                    interpreter,
+                                    "calls into the entrypoint are not allowed, except for calling depositTo",
+                                );
                             }
                         } else {
                             // must not use value (except from account to the entrypoint)
@@ -618,11 +624,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                             {
                                 let value = try_or_continue!(interpreter.stack().peek(2));
                                 if value != U256::ZERO {
-                                    let revert_string =
-                                        format!("calls must not use value except from the account to the entrypoint")
-                                            .abi_encode();
-                                    mstore_revert_string(interpreter, &revert_string);
-                                    interpreter.instruction_result = InstructionResult::Revert;
+                                    revert_with_string(
+                                        interpreter,
+                                        "calls must not use value except from the account to the entrypoint",
+                                    );
                                 }
                             }
 
@@ -632,12 +637,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                                     data.journaled_state.load_account(addr, data.db)
                                 {
                                     if acc.info.code_hash == KECCAK_EMPTY {
-                                        let revert_string = format!(
-                                            "calls to addresses without code are not allowed"
-                                        )
-                                        .abi_encode();
-                                        mstore_revert_string(interpreter, &revert_string);
-                                        interpreter.instruction_result = InstructionResult::Revert;
+                                        revert_with_string(
+                                            interpreter,
+                                            "calls to addresses without code are not allowed",
+                                        );
                                     }
                                 }
                             }
@@ -652,11 +655,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                         let addr = Address::from_word(B256::from(addr_u256));
                         if let Ok((acc, _)) = data.journaled_state.load_account(addr, data.db) {
                             if acc.info.code_hash == KECCAK_EMPTY {
-                                let revert_string =
-                                    format!("EXTCODE* opcodes may not access address with no code")
-                                        .abi_encode();
-                                mstore_revert_string(interpreter, &revert_string);
-                                interpreter.instruction_result = InstructionResult::Revert;
+                                revert_with_string(
+                                    interpreter,
+                                    "EXTCODE* opcodes may not access address with no code",
+                                );
                             }
                         }
                     }
@@ -1631,6 +1633,12 @@ fn mstore_revert_string(interpreter: &mut Interpreter<'_>, bytes: &[u8]) {
     interpreter.shared_memory.set_data(starting_offset, 0, bytes.len(), bytes);
     interpreter.return_offset = starting_offset;
     interpreter.return_len = interpreter.shared_memory.len() - starting_offset
+}
+
+fn revert_with_string(interpreter: &mut Interpreter<'_>, revert_reason: &str) {
+    let revert_string = format!("{revert_reason}").abi_encode();
+    mstore_revert_string(interpreter, &revert_string);
+    interpreter.instruction_result = InstructionResult::Revert;
 }
 
 fn process_create<DB: DatabaseExt>(
