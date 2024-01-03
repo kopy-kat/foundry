@@ -38,7 +38,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fs::File,
     io::BufReader,
-    ops::{Add, Range},
+    ops::Range,
     path::PathBuf,
     sync::Arc,
 };
@@ -471,19 +471,18 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     erc4337_details.factory = Some(Address::from(_init_code_factory));
                 }
 
-                // Todo: Get paymaster
-                // let _paymaster_pointer =
-                //     I256::try_from_be_slice(&input_data[0x204..0x224]).unwrap().as_usize();
-                // let _paymaster_size = FixedBytes::<32>::from_slice(
-                //     &input_data[_paymaster_pointer + 0x24.._paymaster_pointer + 0x44],
-                // );
-                // if _paymaster_size != FixedBytes::<32>::from_slice(&[0x00; 32]) {
-                //     let _paymaster_factory = FixedBytes::<20>::from_slice(
-                //         &input_data[_paymaster_pointer + 0x44.._paymaster_pointer + 0x58],
-                //     );
-                //     erc4337_details.factory = Some(Address::from(_paymaster_factory));
-                //     println!("paymaster: {:?}", erc4337_details.paymaster);
-                // }
+                // Get paymaster
+                let _paymaster_pointer =
+                    I256::try_from_be_slice(&input_data[0x144..0x164]).unwrap().as_usize();
+                let _paymaster_size = FixedBytes::<32>::from_slice(
+                    &input_data[_paymaster_pointer + 0x24.._paymaster_pointer + 0x44],
+                );
+                if _paymaster_size != FixedBytes::<32>::from_slice(&[0x00; 32]) {
+                    let _paymaster_factory = FixedBytes::<20>::from_slice(
+                        &input_data[_paymaster_pointer + 0x44.._paymaster_pointer + 0x58],
+                    );
+                    erc4337_details.paymaster = Some(Address::from(_paymaster_factory));
+                }
             }
             if data.journaled_state.depth() > 2 {
                 if erc4337_details.gas == true {
@@ -543,7 +542,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                                 .journaled_state
                                 .load_account(erc4337_details.entrypoint, data.db)
                             {
-                                // TODO
+                                let slot = keccak256(contract_address);
+                                // Todo
                             }
                         } else {
                             let slot = try_or_continue!(interpreter.stack().peek(0));
@@ -561,6 +561,7 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                                     }
                                 });
                                 if !is_exempt {
+                                    // note: there is currently a weird bug where this revert doesnt actually surface
                                     revert_with_string(
                                         interpreter,
                                         "SLOAD/SSTORE is only allowed on external contracts if the slot is of type keccak256(A || X) + n",

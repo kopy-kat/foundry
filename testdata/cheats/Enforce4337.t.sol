@@ -51,6 +51,16 @@ contract AccountFactory {
 }
 
 contract EntryPoint {
+    struct DepositInfo {
+        uint112 deposit;
+        bool staked;
+        uint112 stake;
+        uint32 unstakeDelaySec;
+        uint48 withdrawTime;
+    }
+
+    mapping(address => DepositInfo) public deposits;
+
     struct ReturnInfo {
         uint256 preOpGas;
         uint256 prefund;
@@ -79,12 +89,17 @@ contract EntryPoint {
         IAccount(userOp.sender).validateUserOp(userOp, userOpHash, 0);
 
         // If specified a paymaster: paymaster.validatePaymasterUserOp.
+        // Todo
 
         ReturnInfo memory returnInfo = ReturnInfo(0, 0, false, 0, 0, hex"");
         StakeInfo memory senderInfo = StakeInfo(0, 0);
         StakeInfo memory factoryInfo = StakeInfo(0, 0);
         StakeInfo memory paymasterInfo = StakeInfo(0, 0);
         // revert ValidationResult(returnInfo, senderInfo, factoryInfo, paymasterInfo);
+    }
+
+    function stake(address depositor, uint256 stakeAmount) public payable {
+        DepositInfo memory info = DepositInfo(0, true, uint112(stakeAmount), 0, 0);
     }
 }
 
