@@ -99,13 +99,13 @@ impl Cheatcode for dumpStateCall {
 
         // Do not include system account or empty accounts in the dump.
         let skip = |key: &Address, val: &Account| {
-            key == &CHEATCODE_ADDRESS ||
-                key == &CALLER ||
-                key == &HARDHAT_CONSOLE_ADDRESS ||
-                key == &TEST_CONTRACT_ADDRESS ||
-                key == &ccx.caller ||
-                key == &ccx.state.config.evm_opts.sender ||
-                val.is_empty()
+            key == &CHEATCODE_ADDRESS
+                || key == &CALLER
+                || key == &HARDHAT_CONSOLE_ADDRESS
+                || key == &TEST_CONTRACT_ADDRESS
+                || key == &ccx.caller
+                || key == &ccx.state.config.evm_opts.sender
+                || val.is_empty()
         };
 
         let alloc = ccx
@@ -454,6 +454,7 @@ impl Cheatcode for startStateDiffRecordingCall {
     fn apply(&self, state: &mut Cheatcodes) -> Result {
         let Self {} = self;
         state.recorded_account_diffs_stack = Some(Default::default());
+        state.recorded_account_diffs_opcodes_stack = Some(Default::default());
         Ok(Default::default())
     }
 }
@@ -462,6 +463,13 @@ impl Cheatcode for stopAndReturnStateDiffCall {
     fn apply(&self, state: &mut Cheatcodes) -> Result {
         let Self {} = self;
         get_state_diff(state)
+    }
+}
+
+impl Cheatcode for getStateDiffOpcodesCall {
+    fn apply(&self, state: &mut Cheatcodes) -> Result {
+        let Self { index } = self;
+        get_state_diff_opcodes(state, *index)
     }
 }
 
@@ -543,6 +551,24 @@ fn get_state_diff(state: &mut Cheatcodes) -> Result {
         .unwrap_or_default()
         .into_iter()
         .flatten()
+        .map(|record| record.access)
+        .collect::<Vec<_>>();
+    Ok(res.abi_encode())
+}
+
+/// Consumes recorded account accesses and returns them as an abi encoded
+/// array of [AccountAccess]. If there are no accounts were
+/// recorded as accessed, an abi encoded empty array is returned.
+///
+/// In the case where `stopAndReturnStateDiff` is called at a lower
+/// depth than `startStateDiffRecording`, multiple `Vec<RecordedAccountAccesses>`
+/// will be flattened, preserving the order of the accesses.
+fn get_state_diff_opcodes(state: &mut Cheatcodes, index: U256) -> Result {
+    let res = state
+        .recorded_account_diffs_opcodes_stack
+        .replace(Default::default())
+        .unwrap_or_default()
+        .into_iter()
         .map(|record| record.access)
         .collect::<Vec<_>>();
     Ok(res.abi_encode())

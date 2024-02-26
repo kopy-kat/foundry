@@ -221,6 +221,20 @@ interface Vm {
         bool reverted;
     }
 
+    /// The result of a `getStateDiffOpcodes` call.
+    struct OpcodeAccess {
+        /// The opcode that was executed.
+        uint8 opcode;
+        /// The program counter of the opcode.
+        uint256 pc;
+        /// The gas cost of the opcode.
+        uint256 gasCost;
+        /// The gas remaining after the opcode.
+        uint256 gas;
+        /// The stack depth before the opcode.
+        uint256 depth;
+      }
+
     // ======== EVM ========
 
     /// Gets the address for a given private key.
@@ -269,6 +283,10 @@ interface Vm {
     /// Returns an ordered array of all account accesses from a `vm.startStateDiffRecording` session.
     #[cheatcode(group = Evm, safety = Safe)]
     function stopAndReturnStateDiff() external returns (AccountAccess[] memory accountAccesses);
+
+    /// Returns an ordered array of all opcodes used from an index in a `vm.startStateDiffRecording` session.
+    #[cheatcode(group = Evm, safety = Safe)]
+    function getStateDiffOpcodes(uint256 index) external returns (OpcodeAccess[] memory opcodeAccesses);
 
     // -------- Recording Map Writes --------
 

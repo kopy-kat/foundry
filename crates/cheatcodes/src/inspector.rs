@@ -31,6 +31,7 @@ use revm::{
     EVMData, Inspector,
 };
 use serde_json::Value;
+use spec::Vm::OpcodeAccess;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     fs::File,
@@ -91,6 +92,12 @@ pub struct AccountAccess {
     pub depth: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct AccountAccessOpcodes {
+    /// The account access.
+    pub access: Vec<crate::Vm::OpcodeAccess>,
+}
+
 /// An EVM inspector that handles calls to various cheatcodes, each with their own behavior.
 ///
 /// Cheatcodes can be called by contracts during execution to modify the VM environment, such as
@@ -146,6 +153,8 @@ pub struct Cheatcodes {
     /// depth. Once that call context has ended, the last vector is removed from the matrix and
     /// merged into the previous vector.
     pub recorded_account_diffs_stack: Option<Vec<Vec<AccountAccess>>>,
+
+    pub recorded_account_diffs_opcodes_stack: Option<Vec<AccountAccessOpcodes>>,
 
     /// Recorded logs
     pub recorded_logs: Option<Vec<crate::Vm::Log>>,
@@ -502,10 +511,10 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                     );
                 }
                 // Record account accesses via the EXT family of opcodes
-                opcode::EXTCODECOPY |
-                opcode::EXTCODESIZE |
-                opcode::EXTCODEHASH |
-                opcode::BALANCE => {
+                opcode::EXTCODECOPY
+                | opcode::EXTCODESIZE
+                | opcode::EXTCODEHASH
+                | opcode::BALANCE => {
                     let kind = match interpreter.current_opcode() {
                         opcode::EXTCODECOPY => crate::Vm::AccountAccessKind::Extcodecopy,
                         opcode::EXTCODESIZE => crate::Vm::AccountAccessKind::Extcodesize,
@@ -557,6 +566,27 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 }
                 _ => (),
             }
+        }
+
+        // Record opcode access if `startStateDiffRecording` has been called
+        if let Some(recorded_account_diffs_opcodes_stack) =
+            &mut self.recorded_account_diffs_opcodes_stack
+        {
+            let opcode_access_struct = crate::Vm::OpcodeAccess {
+                opcode: interpreter.current_opcode(),
+                pc: U256::from(self.pc),
+                gasCost: U256::ZERO,
+                // gas: interpreter.gas.all_used_gas,
+                gas: U256::ZERO,
+                depth: U256::from(data.journaled_state.depth()),
+            };
+            let mut len = recorded_account_diffs_opcodes_stack.len();
+            if len == 0 {
+                let opcode_access = AccountAccessOpcodes { access: Vec::new() };
+                recorded_account_diffs_opcodes_stack.push(opcode_access);
+                len = 1;
+            }
+            recorded_account_diffs_opcodes_stack[len - 1].access.push(opcode_access_struct);
         }
 
         // If the allowed memory writes cheatcode is active at this context depth, check to see
@@ -760,8 +790,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
                 mocks
                     .iter()
                     .find(|(mock, _)| {
-                        call.input.get(..mock.calldata.len()) == Some(&mock.calldata[..]) &&
-                            mock.value.map_or(true, |value| value == call.transfer.value)
+                        call.input.get(..mock.calldata.len()) == Some(&mock.calldata[..])
+                            && mock.value.map_or(true, |value| value == call.transfer.value)
                     })
                     .map(|(_, v)| v)
             }) {
@@ -771,8 +801,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
 
         // Apply our prank
         if let Some(prank) = &self.prank {
-            if data.journaled_state.depth() >= prank.depth &&
-                call.context.caller == prank.prank_caller
+            if data.journaled_state.depth() >= prank.depth
+                && call.context.caller == prank.prank_caller
             {
                 let mut prank_applied = false;
 
@@ -804,8 +834,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
             //
             // We do this because any subsequent contract calls *must* exist on chain and
             // we only want to grab *this* call, not internal ones
-            if data.journaled_state.depth() == broadcast.depth &&
-                call.context.caller == broadcast.original_caller
+            if data.journaled_state.depth() == broadcast.depth
+                && call.context.caller == broadcast.original_caller
             {
                 // At the target depth we set `msg.sender` & tx.origin.
                 // We are simulating the caller as being an EOA, so *both* must be set to the
@@ -1084,9 +1114,9 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
         if let TransactTo::Call(test_contract) = data.env.tx.transact_to {
             // if a call to a different contract than the original test contract returned with
             // `Stop` we check if the contract actually exists on the active fork
-            if data.db.is_forked_mode() &&
-                status == InstructionResult::Stop &&
-                call.contract != test_contract
+            if data.db.is_forked_mode()
+                && status == InstructionResult::Stop
+                && call.contract != test_contract
             {
                 self.fork_revert_diagnostic =
                     data.db.diagnose_revert(call.contract, &data.journaled_state);
@@ -1192,8 +1222,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
 
         // Apply our broadcast
         if let Some(broadcast) = &self.broadcast {
-            if data.journaled_state.depth() >= broadcast.depth &&
-                call.caller == broadcast.original_caller
+            if data.journaled_state.depth() >= broadcast.depth
+                && call.caller == broadcast.original_caller
             {
                 if let Err(err) = data.journaled_state.load_account(broadcast.new_origin, data.db) {
                     return (InstructionResult::Revert, None, gas, Error::encode(err));
@@ -1326,8 +1356,8 @@ impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
 
         // Handle expected reverts
         if let Some(expected_revert) = &self.expected_revert {
-            if data.journaled_state.depth() <= expected_revert.depth &&
-                matches!(expected_revert.kind, ExpectedRevertKind::Default)
+            if data.journaled_state.depth() <= expected_revert.depth
+                && matches!(expected_revert.kind, ExpectedRevertKind::Default)
             {
                 let expected_revert = std::mem::take(&mut self.expected_revert).unwrap();
                 return match expect::handle_expect_revert(
@@ -1567,10 +1597,10 @@ fn apply_dispatch<DB: DatabaseExt>(calls: &Vm::VmCalls, ccx: &mut CheatsCtxt<DB>
 fn access_is_call(kind: crate::Vm::AccountAccessKind) -> bool {
     matches!(
         kind,
-        crate::Vm::AccountAccessKind::Call |
-            crate::Vm::AccountAccessKind::StaticCall |
-            crate::Vm::AccountAccessKind::CallCode |
-            crate::Vm::AccountAccessKind::DelegateCall
+        crate::Vm::AccountAccessKind::Call
+            | crate::Vm::AccountAccessKind::StaticCall
+            | crate::Vm::AccountAccessKind::CallCode
+            | crate::Vm::AccountAccessKind::DelegateCall
     )
 }
 
